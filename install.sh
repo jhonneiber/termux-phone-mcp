@@ -165,6 +165,20 @@ if [ "$DOTEST" = 1 ] && [ "$DOSTART" = 1 ]; then
 fi
 
 URL=$(cat "$MCPD/state/current_url" 2>/dev/null || true)
+if [ "${AUTH:-1}" = 1 ] && [ -s "$ROOT/token" ]; then
+  CFG='  { "mcpServers": { "mi-telefono": {
+      "type": "streamable-http",
+      "url": "'"$URL"'",
+      "headers": { "Authorization": "Bearer <pega aqui el token>" } } } }
+
+  El token no se imprime a proposito (acaba de caer en un log si has pipeado la
+  salida). Para verlo:  cat '"$ROOT/token"
+else
+  CFG='  { "mcpServers": { "mi-telefono": {
+      "type": "streamable-http",
+      "url": "'"$URL"'" } } }   (endpoint abierto, sin cabeceras)'
+fi
+
 [ -n "$URL" ] || URL="http://127.0.0.1:8001/mcp (solo local)"
 echo
 say "listo"
@@ -177,10 +191,7 @@ cat <<INFO
 
 Conéctalo a cualquier cliente MCP con:
 
-  { "mcpServers": { "mi-telefono": {
-      "type": "streamable-http",
-      "url": "$URL",
-      "headers": { "Authorization": "Bearer $(cat "$ROOT/token" 2>/dev/null)" } } } }
+$CFG
 
 Prueba rápida desde el propio móvil:  ~/termux_mcp.sh ping
 Apagar todo:                          ~/mcpd/stop.sh

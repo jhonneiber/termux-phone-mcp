@@ -1,0 +1,13 @@
+# Nunca subir esto: son secretos y datos de tu dispositivo
+__pycache__/
+*.pyc
+token
+token.*
+secrets.env
+config.env
+logs/
+state/
+spill/
+tmp/
+*.log
+.DS_Store

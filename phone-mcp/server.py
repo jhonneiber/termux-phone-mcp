@@ -15,7 +15,11 @@ Config (env o config.env):
   PHONE_MCP_HOST=127.0.0.1  PHONE_MCP_PORT=8001  PHONE_MCP_READONLY=0
   PHONE_MCP_TIMEOUT=30      PHONE_MCP_MAX_TIMEOUT=300  PHONE_MCP_MAX_OUT=200000
   PHONE_MCP_TMP=/data/local/tmp  PHONE_MCP_TOKEN=<fija el token en vez de autogenerar>
+
+
 """
+
+__version__ = "2.1.1"
 import base64
 import hashlib
 import hmac
@@ -97,7 +101,7 @@ CONFIG = {
     "allow_root": _env("PHONE_MCP_ALLOW_ROOT", "1") in ("1", "true", "yes"),
 }
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
-SERVER_INFO = {"name": "termux-phone", "version": "2.0.0"}
+SERVER_INFO = {"name": "termux-phone", "version": __version__}
 
 # --------------------------------------------------------------------------- auth
 TOKEN_FILE = ROOT / "token"
@@ -146,12 +150,14 @@ def sh(cmd, timeout=None, cwd=None, root=False, binary=False):
         cmd = "su -c " + shlex.quote(wrapped)
     t = min(int(timeout or CONFIG["timeout"]), CONFIG["max_timeout"])
     try:
+        # OJO: errors= solo es legal con texto; con binary=True reventaba (v2.1 lo midio)
+        kw = {} if binary else {"errors": "replace"}
         p = subprocess.run(cmd, shell=True, cwd=cwd, timeout=t,
-                           capture_output=True, text=not binary, errors="replace")
+                           capture_output=True, text=not binary, **kw)
     except subprocess.TimeoutExpired:
-        return f"<timeout a los {t}s; usa spawn() para trabajo largo>", 124
+        return (b"" if binary else f"<timeout a los {t}s; usa spawn() para trabajo largo>"), 124
     except Exception as e:                                    # noqa: BLE001
-        return f"<error ejecutando: {e}>", 1
+        return (b"" if binary else f"<error ejecutando: {e}>"), 1
     if binary:
         return p.stdout, p.returncode
     return (p.stdout or "") + (p.stderr or ""), p.returncode
@@ -245,6 +251,9 @@ def t_shell(args):
       {"cmd": ("string", "comando"), "name": ("string", "etiqueta opcional", ""),
        "root": ("boolean", "ejecutar como root", False)}, kind="run")
 def t_spawn(args):
+    args = dict(args)
+    if "path" in args and args["path"]:
+        args["path"] = os.path.expanduser(str(args["path"]))
     jid = time.strftime("%H%M%S") + "-" + uuid.uuid4().hex[:6]
     d = JOBS / jid
     d.mkdir(parents=True, exist_ok=True)
@@ -319,6 +328,9 @@ def inside_ok(p, write=False):
       {"path": ("string", "ruta absoluta"), "offset": ("integer", "bytes a saltar", 0, 0),
        "max_bytes": ("integer", "bytes a leer", 60000, 1)})
 def t_fs_read(args):
+    args = dict(args)
+    if "path" in args and args["path"]:
+        args["path"] = os.path.expanduser(str(args["path"]))
     p, off = args["path"], int(args.get("offset") or 0)
     mx = min(int(args.get("max_bytes") or 60000), CONFIG["max_out"])
     out, rc = sh(f"if [ -d {shlex.quote(p)} ]; then echo 'ES_UN_DIRECTORIO'; "
@@ -434,6 +446,9 @@ def t_fs_pull(args):
       {"path": ("string", "destino"), "b64": ("string", "datos base64"),
        "mode": ("string", "permisos octal", "0644")}, kind="write")
 def t_fs_push(args):
+    args = dict(args)
+    if "path" in args and args["path"]:
+        args["path"] = os.path.expanduser(str(args["path"]))
     tmp = f"{T()}/mcp_push_{uuid.uuid4().hex[:8]}.bin"
     out, rc = sh(f"printf %s {shlex.quote(args['b64'])} | base64 -d > {tmp} && "
                  f"mkdir -p \"$(dirname {shlex.quote(args['path'])})\" 2>/dev/null; "
@@ -499,6 +514,66 @@ def t_screenshot(args):
     out_mime = opt[1] if opt else "image/png"
     return {"content": [{"type": "image", "data": b64, "mimeType": out_mime},
                         {"type": "text", "text": note}]}
+
+
+def capture_jpeg(tw=480, quality=60, tag=""):
+    """screencap -> JPEG de `tw` px de ancho. (ruta, mime, nbytes, ms) o None."""
+    t0 = time.time()
+    png, jpg = f"{T()}/mcp_live{tag}.png", f"{T()}/mcp_live{tag}.jpg"
+    _, rc = sh(f"rm -f {png} {jpg}; screencap -p {png}", 25, root=True)
+    if rc != 0:
+        return None
+    how = ""
+    out2 = ""
+    if has("ffmpeg", root=True):
+        qv = max(2, 32 - int(int(quality) * 30 / 100))
+        out2, rc2 = sh(f"ffmpeg -y -v error -i {png} -vf scale={tw}:-2 -q:v {qv} {jpg} "
+                       f"2>&1; stat -c %s {jpg} 2>/dev/null", 30, root=True)
+        if rc2 == 0:
+            how = f"ffmpeg q:v={qv}"
+    if not how and has("pngtopnm", True) and has("pnmscale", True):
+        canjpeg = has("pnmtojpeg", True)
+        pipe = f"pngtopnm {png} | pnmscale -xsize {tw}"
+        tail = f"{pipe} | pnmtojpeg -quality {int(quality)} > {jpg}" if canjpeg \
+            else f"{pipe} | pnmtopng > {jpg}"
+        out2, rc2 = sh(f"{tail} 2>/dev/null; stat -c %s {jpg} 2>/dev/null", 45, root=True)
+        if rc2 == 0 and not canjpeg:
+            how = "png (sin pnmtojpeg)"
+        elif rc2 == 0:
+            how = "netpbm"
+    if not how:
+        out2, rc2 = sh(f"cp {png} {jpg} 2>/dev/null; stat -c %s {jpg} 2>/dev/null", 15, root=True)
+        if rc2 == 0:
+            how = "png crudo"
+    digits = re.findall(r"\b(\d+)\b", out2 or "")
+    if not how or not digits or int(digits[-1]) < 500:
+        return None
+    mime = "image/jpeg" if how.startswith(("ffmpeg", "netpbm")) else "image/png"
+    return jpg, mime, int(digits[-1]), int((time.time() - t0) * 1000)
+
+
+@tool("frame", "Un fotograma rapido y ligero de la pantalla (pensado para bucles de agente "
+      "ver->tocar->ver): mas pequeno y veloz que screenshot y sin despertar el equipo por "
+      "defecto. Para vision continua humana abre GET /stream.mjpg en el navegador.",
+      {"width": ("integer", "ancho del fotograma en px", 480, 64),
+       "quality": ("integer", "calidad JPEG 1-100", 60, 5),
+       "wake": ("boolean", "despertar la pantalla si esta apagada", False)})
+def t_frame(args):
+    if truthy(args.get("wake")):
+        ensure_awake()
+    tw = max(64, min(1280, int(args.get("width") or 480)))
+    q = max(5, min(100, int(args.get("quality") or 60)))
+    got = capture_jpeg(tw, q, f"{os.getpid() % 10000}")
+    if not got:
+        return text("screencap no dio fotograma (pantalla bloqueada o sin su/root)", isError=True)
+    path, mime, n, ms = got
+    data, rc = sh(f"base64 -w0 {path}", 40, root=True)
+    if rc != 0:
+        return text(f"no pude leer el fotograma: {data}", isError=True)
+    b64 = data.strip().replace("\n", "")
+    return {"content": [{"type": "image", "data": b64, "mimeType": mime},
+                        {"type": "text", "text": f"{mime.split('/')[1]} {n} bytes, "
+                                                 f"{ms} ms de captura+conversion, ancho {tw}px"}]}
 
 
 @tool("screen_info", "Tamano, densidad, rotacion, brillo y estado del display.")
@@ -1187,6 +1262,7 @@ def t_help(_):
         "- Trabajo largo: spawn -> job_out -> job_kill (evita el corte por timeout).\n"
         "- Ver pantalla: screenshot. Entenderla: ui_tree (guarda indices) -> ui_tap index=N, "
         "o ui_tap_text 'Aceptar'.\n"
+        "- En vivo: GET /stream.mjpg?fps=4&width=720 (MJPEG); para bucles agente: frame().\n"
         "- Salidas enormes se vuelcan a ~/phone-mcp/spill/ y se leen por trozos con fs_read+offset.\n"
         "- Destructivo (fs_delete, app_clear_data, prop/scrituras, power, svc) requiere confirm=true; "
         "ademas se registra en logs/audit.log.\n"
@@ -1214,7 +1290,7 @@ PROMPTS = {
 
 
 # ------------------------------------------------------------------ protocolo MCP
-from flask import Flask, jsonify, request  # noqa: E402  (tras helpers, para orden claro)
+from flask import Flask, jsonify, request, Response  # noqa: E402  (tras helpers, para orden claro)
 
 app = Flask(__name__)
 SESSIONS = set()
@@ -1339,6 +1415,52 @@ def mcp():
         return err(rid, -32603, f"{type(e).__name__}: {e}")
 
 
+import threading                                    # noqa: E402  (stream MJPEG)
+STREAM_SLOTS = threading.Semaphore(2)
+
+
+@app.route("/stream.mjpg")
+def stream_mjpg():
+    """Pantalla en vivo: MJPEG multipart. ?fps=4&width=720&q=55&secs=300 (max 2 clientes)."""
+    fps = max(1, min(12, int(request.args.get("fps") or 4)))
+    tw = max(120, min(1280, int(request.args.get("width") or 720)))
+    q = max(20, min(95, int(request.args.get("q") or 55)))
+    secs = max(10, min(600, int(request.args.get("secs") or 300)))
+    if not STREAM_SLOTS.acquire(blocking=False):
+        return Response("ya hay 2 streams en curso: cierra uno o espera\n",
+                        status=503, mimetype="text/plain")
+    ensure_awake()
+
+    def gen():
+        tag = f"s{os.getpid() % 10000}"
+        fin = time.time() + secs
+        fallos = 0
+        try:
+            while time.time() < fin and fallos < 3:
+                t0 = time.time()
+                got = capture_jpeg(tw, q, tag)
+                if got and got[1].startswith("image/"):
+                    raw, rc = sh(f"cat {got[0]}", 30, root=True, binary=True)
+                    if rc == 0 and raw and raw[:2] in (b"\xff\xd8", b"\x89P"):
+                        fallos = 0
+                        tipo = "image/jpeg" if raw[:2] == b"\xff\xd8" else "image/png"
+                        yield (("--frame\r\nContent-Type: %s\r\nContent-Length: " % tipo).encode()
+                               + str(len(raw)).encode() + b"\r\n\r\n" + raw + b"\r\n")
+                    else:
+                        fallos += 1
+                else:
+                    fallos += 1
+                dt = time.time() - t0
+                time.sleep(max(0.0, 1.0 / fps - dt))
+        except (BrokenPipeError, ConnectionResetError, GeneratorExit):
+            pass
+        finally:
+            STREAM_SLOTS.release()
+
+    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame",
+                    headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "server": SERVER_INFO, "tools": len(TOOLS),
@@ -1353,6 +1475,8 @@ def index():
     acceso = ("<b>SIN AUTORIZACION</b> (PHONE_MCP_AUTH=0)" if not CONFIG["auth_required"]
               else "con <code>Authorization: Bearer &lt;token&gt;</code>")
     return (f"<h1>phone-mcp</h1><p>Endpoint MCP: <code>POST /mcp</code> {acceso}.</p>"
+            "<p>Pantalla en vivo: <a href=\"/stream.mjpg\">/stream.mjpg</a> "
+            "(MJPEG; si hay auth, anade <code>?token=...</code>).</p>"
             f"<p>{len(TOOLS)} tools, modo "
             f"{'READONLY' if CONFIG['readonly'] else 'completo'}.</p>")
 

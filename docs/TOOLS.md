@@ -170,3 +170,20 @@
 - `vibrate(ms:integer)`
 
 \* obligatorio.
+
+
+## frame (v2.1)
+
+Un fotograma JPEG ligero (`width` 64-1280 px por defecto 480, `quality` 5-100 por defecto 60,
+`wake` false). Pensado para el bucle del agente: `frame` → decide → `ui_tap` → `frame`…
+Más rápido y barato que `screenshot` (que sigue siendo la captura grande con `save_path`).
+
+## GET /stream.mjpg (v2.1)
+
+Pantalla en vivo en MJPEG (`multipart/x-mixed-replace`). Parámetros: `fps` (1-12, def. 4),
+`width` (120-1280, def. 720), `q` (20-95, def. 55), `secs` (10-600, def. 300). Máximo **2
+espectadores** simultáneos (503 si no). Con `PHONE_MCP_AUTH=1` añade `?token=...` (la
+autenticación por cabecera no funciona en `<img>`/reproductores).
+
+Cada fotograma es `screencap` + conversión (ffmpeg o netpbm si hay; si no, PNG crudo): la
+cadencia real ronda 1-2 fps a 720p — es «en vivo» para teleoperación y pruebas, no cine.

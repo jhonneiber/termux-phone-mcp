@@ -15,12 +15,21 @@ alive(){ curl -fs -m 4 "$HEALTH" 2>/dev/null | grep -q '"ok"'; }
 
 publish(){
   local u="$1" force="${2:-}"
+  # Re-leemos secrets.env EN CADA publicacion: si lo editas (o lo rellenas) con
+  # el supervisor corriendo, no hace falta reiniciar para que la URL se publique.
+  [ -f "$HOME/phone-mcp/secrets.env" ] && . "$HOME/phone-mcp/secrets.env"
   [ -n "$u" ] || return 1
   if [ "$force" != "force" ] && [ -f "$STATE/current_url" ] \
      && [ "$(cat "$STATE/current_url" 2>/dev/null)" = "$u" ]; then return 0; fi
   echo "$u" > "$STATE/current_url"
-  [ -n "${GIST_ID:-}" ] || return 0
-  command -v gh >/dev/null 2>&1 || return 0
+  if [ -z "${GIST_ID:-}" ]; then
+    log "AVISO: no hay GIST_ID en ~/phone-mcp/secrets.env -> la URL NO se publica (los clientes no la encontraran). Solo guardada en $STATE/current_url"
+    return 0
+  fi
+  if ! command -v gh >/dev/null 2>&1; then
+    log "AVISO: gh no esta en el PATH -> no puedo publicar en el gist"
+    return 0
+  fi
   python3 - "$u" "$GIST_ID" "$GIST_FILE" >> "$LOG" 2>&1 <<'PY'
 import json, subprocess, sys
 url, gid, gfile = sys.argv[1], sys.argv[2], sys.argv[3]

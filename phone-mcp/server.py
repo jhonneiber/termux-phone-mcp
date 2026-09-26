@@ -19,7 +19,7 @@ Config (env o config.env):
 
 """
 
-__version__ = "2.1.1"
+__version__ = "2.2.0"
 import base64
 import hashlib
 import hmac
@@ -514,78 +514,6 @@ def t_screenshot(args):
     out_mime = opt[1] if opt else "image/png"
     return {"content": [{"type": "image", "data": b64, "mimeType": out_mime},
                         {"type": "text", "text": note}]}
-
-
-def capture_jpeg(tw=480, quality=60, tag=""):
-    """screencap -> JPEG de `tw` px de ancho. (ruta, mime, nbytes, ms) o None."""
-    t0 = time.time()
-    png, jpg = f"{T()}/mcp_live{tag}.png", f"{T()}/mcp_live{tag}.jpg"
-    _, rc = sh(f"rm -f {png} {jpg}; screencap -p {png}", 25, root=True)
-    if rc != 0:
-        return None
-    how = ""
-    out2 = ""
-    if has("ffmpeg", root=True):
-        qv = max(2, 32 - int(int(quality) * 30 / 100))
-        out2, rc2 = sh(f"ffmpeg -y -v error -i {png} -vf scale={tw}:-2 -q:v {qv} {jpg} "
-                       f"2>&1; stat -c %s {jpg} 2>/dev/null", 30, root=True)
-        if rc2 == 0:
-            how = f"ffmpeg q:v={qv}"
-    if not how and has("pngtopnm", True) and has("pnmscale", True):
-        canjpeg = has("pnmtojpeg", True)
-        pipe = f"pngtopnm {png} | pnmscale -xsize {tw}"
-        tail = f"{pipe} | pnmtojpeg -quality {int(quality)} > {jpg}" if canjpeg \
-            else f"{pipe} | pnmtopng > {jpg}"
-        out2, rc2 = sh(f"{tail} 2>/dev/null; stat -c %s {jpg} 2>/dev/null", 45, root=True)
-        if rc2 == 0 and not canjpeg:
-            how = "png (sin pnmtojpeg)"
-        elif rc2 == 0:
-            how = "netpbm"
-    if not how:
-        out2, rc2 = sh(f"cp {png} {jpg} 2>/dev/null; stat -c %s {jpg} 2>/dev/null", 15, root=True)
-        if rc2 == 0:
-            how = "png crudo"
-    digits = re.findall(r"\b(\d+)\b", out2 or "")
-    if not how or not digits or int(digits[-1]) < 500:
-        return None
-    mime = "image/jpeg" if how.startswith(("ffmpeg", "netpbm")) else "image/png"
-    return jpg, mime, int(digits[-1]), int((time.time() - t0) * 1000)
-
-
-@tool("frame", "Un fotograma rapido y ligero de la pantalla (pensado para bucles de agente "
-      "ver->tocar->ver): mas pequeno y veloz que screenshot y sin despertar el equipo por "
-      "defecto. Para vision continua humana abre GET /stream.mjpg en el navegador.",
-      {"width": ("integer", "ancho del fotograma en px", 480, 64),
-       "quality": ("integer", "calidad JPEG 1-100", 60, 5),
-       "wake": ("boolean", "despertar la pantalla si esta apagada", False)})
-def t_frame(args):
-    if truthy(args.get("wake")):
-        ensure_awake()
-    tw = max(64, min(1280, int(args.get("width") or 480)))
-    q = max(5, min(100, int(args.get("quality") or 60)))
-    got = capture_jpeg(tw, q, f"{os.getpid() % 10000}")
-    if not got:
-        return text("screencap no dio fotograma (pantalla bloqueada o sin su/root)", isError=True)
-    path, mime, n, ms = got
-    data, rc = sh(f"base64 -w0 {path}", 40, root=True)
-    if rc != 0:
-        return text(f"no pude leer el fotograma: {data}", isError=True)
-    b64 = data.strip().replace("\n", "")
-    return {"content": [{"type": "image", "data": b64, "mimeType": mime},
-                        {"type": "text", "text": f"{mime.split('/')[1]} {n} bytes, "
-                                                 f"{ms} ms de captura+conversion, ancho {tw}px"}]}
-
-
-@tool("screen_info", "Tamano, densidad, rotacion, brillo y estado del display.")
-def t_screen_info(_):
-    q = ("echo \"size: $(wm size)\"; echo \"density: $(wm density)\"; "
-         "echo \"brightness: $(settings get system screen_brightness)\"; "
-         "echo \"auto: $(settings get system screen_auto_brightness)\"; "
-         "echo \"timeout: $(settings get system screen_off_timeout)\"; "
-         "dumpsys display | grep -m1 -E 'mState=|state=' | head -1; "
-         "dumpsys window 2>/dev/null | grep -m1 mCurrentFocus")
-    out, _ = sh(q, 25, root=True)
-    return text(out)
 
 
 def has(prog: str, root: bool = False) -> bool:
@@ -1262,7 +1190,6 @@ def t_help(_):
         "- Trabajo largo: spawn -> job_out -> job_kill (evita el corte por timeout).\n"
         "- Ver pantalla: screenshot. Entenderla: ui_tree (guarda indices) -> ui_tap index=N, "
         "o ui_tap_text 'Aceptar'.\n"
-        "- En vivo: GET /stream.mjpg?fps=4&width=720 (MJPEG); para bucles agente: frame().\n"
         "- Salidas enormes se vuelcan a ~/phone-mcp/spill/ y se leen por trozos con fs_read+offset.\n"
         "- Destructivo (fs_delete, app_clear_data, prop/scrituras, power, svc) requiere confirm=true; "
         "ademas se registra en logs/audit.log.\n"
@@ -1416,51 +1343,6 @@ def mcp():
 
 
 import threading                                    # noqa: E402  (stream MJPEG)
-STREAM_SLOTS = threading.Semaphore(2)
-
-
-@app.route("/stream.mjpg")
-def stream_mjpg():
-    """Pantalla en vivo: MJPEG multipart. ?fps=4&width=720&q=55&secs=300 (max 2 clientes)."""
-    fps = max(1, min(12, int(request.args.get("fps") or 4)))
-    tw = max(120, min(1280, int(request.args.get("width") or 720)))
-    q = max(20, min(95, int(request.args.get("q") or 55)))
-    secs = max(10, min(600, int(request.args.get("secs") or 300)))
-    if not STREAM_SLOTS.acquire(blocking=False):
-        return Response("ya hay 2 streams en curso: cierra uno o espera\n",
-                        status=503, mimetype="text/plain")
-    ensure_awake()
-
-    def gen():
-        tag = f"s{os.getpid() % 10000}"
-        fin = time.time() + secs
-        fallos = 0
-        try:
-            while time.time() < fin and fallos < 3:
-                t0 = time.time()
-                got = capture_jpeg(tw, q, tag)
-                if got and got[1].startswith("image/"):
-                    raw, rc = sh(f"cat {got[0]}", 30, root=True, binary=True)
-                    if rc == 0 and raw and raw[:2] in (b"\xff\xd8", b"\x89P"):
-                        fallos = 0
-                        tipo = "image/jpeg" if raw[:2] == b"\xff\xd8" else "image/png"
-                        yield (("--frame\r\nContent-Type: %s\r\nContent-Length: " % tipo).encode()
-                               + str(len(raw)).encode() + b"\r\n\r\n" + raw + b"\r\n")
-                    else:
-                        fallos += 1
-                else:
-                    fallos += 1
-                dt = time.time() - t0
-                time.sleep(max(0.0, 1.0 / fps - dt))
-        except (BrokenPipeError, ConnectionResetError, GeneratorExit):
-            pass
-        finally:
-            STREAM_SLOTS.release()
-
-    return Response(gen(), mimetype="multipart/x-mixed-replace; boundary=frame",
-                    headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
-
-
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "server": SERVER_INFO, "tools": len(TOOLS),
@@ -1475,7 +1357,6 @@ def index():
     acceso = ("<b>SIN AUTORIZACION</b> (PHONE_MCP_AUTH=0)" if not CONFIG["auth_required"]
               else "con <code>Authorization: Bearer &lt;token&gt;</code>")
     return (f"<h1>phone-mcp</h1><p>Endpoint MCP: <code>POST /mcp</code> {acceso}.</p>"
-            "<p>Pantalla en vivo: <a href=\"/stream.mjpg\">/stream.mjpg</a> "
             "(MJPEG; si hay auth, anade <code>?token=...</code>).</p>"
             f"<p>{len(TOOLS)} tools, modo "
             f"{'READONLY' if CONFIG['readonly'] else 'completo'}.</p>")

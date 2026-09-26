@@ -230,9 +230,3 @@ móvil propio, con token, y con `--readonly` cuando no necesites escribir.
 MIT. Si esto te sirve y lo usas en producción en casa, un ⭐ en el repo es toda la retro que pido.
 
 
-## Pantalla en vivo (v2.1)
-
-- `GET /stream.mjpg` — MJPEG continuo para ver el móvil desde el navegador (`?fps=4&width=720&q=55&secs=300`).
-- Tool `frame` — fotograma rápido para que un agente juegue/opere en bucle ver→tocar→ver.
-
-Ambos reutilizan la captura de `screenshot` (screencap + ffmpeg/netpbm). Ver `docs/TOOLS.md`.

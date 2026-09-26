@@ -131,7 +131,7 @@ def main():
     check("required siempre existe en properties", not badreq, str(badreq[:4]))
     nodesc = [t["name"] for t in tools if len((t.get("description") or "").strip()) < 20]
     check("todas documentadas (>20 chars)", not nodesc, str(nodesc[:4]))
-    for expect in ("shell", "spawn", "screenshot", "frame", "ui_tree", "ui_tap", "fs_write", "app_launch",
+    for expect in ("shell", "spawn", "screenshot", "ui_tree", "ui_tap", "fs_write", "app_launch",
                    "device_info", "logcat", "selftest", "help", "job_out", "fs_grep", "battery"):
         check(f"tool presente: {expect}", expect in names, "")
 
@@ -242,19 +242,19 @@ def main():
     except Exception as e:                                              # noqa: BLE001
         check("/health accesible", False, str(e))
 
-    # --- 11. pantalla en vivo (MJPEG): endpoint de streaming
+    # --- 11. la transmision de pantalla se retiro (v2.2): ni stream ni frame
     try:
         req = urllib.request.Request(base + "/stream.mjpg" + (f"?token={token}" if token else ""),
                                      method="GET")
-        with urllib.request.urlopen(req, timeout=25) as r:
-            ct = r.headers.get("Content-Type", "")
-            check("stream.mjpg 200 y multipart/x-mixed-replace", r.status == 200
-                  and "multipart/x-mixed-replace" in ct, ct[:70])
-            head = r.read(2048)
-            check("stream.mjpg emite boundary --frame (o cierra limpio sin screencap)",
-                  b"--frame" in head or len(head) == 0, f"{len(head)} bytes")
-    except Exception as e:                                              # noqa: BLE001
-        check("stream.mjpg accesible", False, f"{type(e).__name__}: {e}")
+        with urllib.request.urlopen(req, timeout=10) as r:
+            check("/stream.mjpg ya no transmite (404)", r.status == 404, f"status {r.status}")
+    except urllib.error.HTTPError as e:
+        check("/stream.mjpg ya no transmite (404)", e.code == 404, f"status {e.code}")
+    except Exception as e:  # noqa: BLE001
+        check("/stream.mjpg ya no transmite (404)", False, f"{type(e).__name__}: {e}")
+    st, _, body, obj = rpc(a.url, token, "tools/list")
+    nombres = [tt["name"] for tt in (obj or {}).get("result", {}).get("tools", [])]
+    check("frame ya no aparece en tools/list", "frame" not in nombres, f"{len(nombres)} tools")
 
     ok = sum(1 for _, o, _ in results if o)
     total = len(results)
